@@ -1,93 +1,89 @@
 ##########################################
-#Servo control example python script for AVDASI 2 AVIONICS
-#Defines which servo you want to move
-#converts given angle to PWM output servo needs that translates to that angle
-#Sets maximum and mimimum pwms as well as the trim (0 angle pwm)
-#writes the new servo parameters
-#sends the wanted angle to the cube
-#Author: Ethan Sheehan & Lucas Dick
-
-#This file should be able to run independently
-#Potential upgrades:
-    #Allow multiple servo movement simultaneously
-    #Calibrate to your own servos and mechanisms
-    #Checks/confirmation that servos did indeed move
-
+# Servo control example python script for AVDASI 2 AVIONICS
+# Controls flap and aileron servos
+# Author: Ethan Sheehan & Lucas Dick
 ##########################################
 
-from pymavlink import mavutil #make sure pymavlink module is installed
+from pymavlink import mavutil
 
+# Define pins for each servo
+FLAP_PIN = 8
+AILERON_PIN = 9
 
-PIN = 8 #defines which servo you want to move
+# Angle to PWM converter functions
+def flap_angle_to_pwm(angle):
+    return -19 * angle + 1550  # Equation for flap servo
 
-#angle to pwm converter function
-def angle_to_pwm(angle):
-    return -19 * angle + 1550 #equation found by experimentation with mechanism
+def aileron_angle_to_pwm(angle):
+    return -19 * angle + 1550  # Equation for aileron servo - adjust coefficients as needed
 
-#string to bytes converter function
 def mav_bytes(string):
-    return bytes(string, 'utf-8') #Converts a string to bytes in UTF-8 format, required for MAVLink param names
+    return bytes(string, 'utf-8')
 
-#Servo class for storing configuration and converting angles to PWM
 class Servo:
-    def __init__(self, pin, min_pwm=950, max_pwm=2150, trim=1550, reversed=False): #define PWM range and trim
-        #Initialize servo configuration with pin and PWM range
+    def __init__(self, pin, angle_converter, min_pwm=950, max_pwm=2150, trim=1550, reversed=False):
         self.pin = pin
         self.min = min_pwm
         self.max = max_pwm
         self.trim = trim
         self.reversed = reversed
+        self.angle_converter = angle_converter
 
-    def angle_to_pwm(self, angle): #call function and converts a given angle to its corresponding PWM signal
-        return angle_to_pwm(angle)
+    def angle_to_pwm(self, angle):
+        return self.angle_converter(angle)
 
-#ServoController class to configure servo parameters and send angle commands via MAVLink
 class ServoController:
     def __init__(self, mav):
-        self.mav = mav #MAVLink connection instance
-        self.servo = Servo(pin=PIN) #Initialize Servo with predefined pin
+        self.mav = mav
+        self.flap = Servo(pin=FLAP_PIN, angle_converter=flap_angle_to_pwm)
+        self.aileron = Servo(pin=AILERON_PIN, angle_converter=aileron_angle_to_pwm)
 
-    #Write servo parameters function
-    def write_servo_params(self):
-        print("Setting servo params...")
-        for key, val in { #call values defined above
-            "MAX": self.servo.max,
-            "MIN": self.servo.min,
-            "TRIM": self.servo.trim,
-            "REVERSED": int(self.servo.reversed)
+    def write_servo_params(self, servo):
+        print(f"Setting servo {servo.pin} params...")
+        for key, val in {
+            "MAX": servo.max,
+            "MIN": servo.min,
+            "TRIM": servo.trim,
+            "REVERSED": int(servo.reversed)
         }.items():
             self.mav.mav.param_set_send(
                 self.mav.target_system,
                 self.mav.target_component,
-                mav_bytes(f"SERVO{self.servo.pin}_{key}"), #Parameter name in byte format
+                mav_bytes(f"SERVO{servo.pin}_{key}"),
                 val,
-                mavutil.mavlink.MAV_PARAM_TYPE_REAL32 #Parameter type
+                mavutil.mavlink.MAV_PARAM_TYPE_REAL32
             )
         print("Done.")
 
-    #Send angle command to the servo function
-    def send_angle(self, angle):
-        pwm = self.servo.angle_to_pwm(angle) #Convert angle to PWM
-        print(f"Angle {angle}° → PWM {pwm}")
+    def write_all_servo_params(self):
+        self.write_servo_params(self.flap)
+        self.write_servo_params(self.aileron)
+
+    def move_servo(self, servo, angle):
+        pwm = servo.angle_to_pwm(angle)
+        print(f"Servo {servo.pin}: Angle {angle}° → PWM {pwm}")
         self.mav.mav.command_long_send(
             self.mav.target_system,
             self.mav.target_component,
-            mavutil.mavlink.MAV_CMD_DO_SET_SERVO, #Command to set servo position
-            0, self.servo.pin, pwm, 0, 0, 0, 0, 0
+            mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+            0, servo.pin, pwm, 0, 0, 0, 0, 0
         )
 
-#Independence call
-if __name__ == "__main__":#allows this script to be ran independently
-    #can be used to test if it works before integrating into wider system
-    #useful for debugging
+    def move_flap(self, angle):
+        self.move_servo(self.flap, angle)
 
-    #connect to cute and await heartbeat
-    mav = mavutil.mavlink_connection('udp:0.0.0.0:14550')  
+    def move_aileron(self, angle):
+        self.move_servo(self.aileron, angle)
+
+if __name__ == "__main__":
+    mav = mavutil.mavlink_connection('udp:0.0.0.0:14550')
     mav.wait_heartbeat()
-    print("Heartbeat received from system (system %u component %u)" % (mav.target_system, mav.target_component))
+    print("Heartbeat received from system (system %u component %u)" % 
+          (mav.target_system, mav.target_component))
 
     controller = ServoController(mav)
-    controller.write_servo_params()
+    controller.write_all_servo_params()
 
-    #Example: Move servo to 30 degrees
-    controller.send_angle(30)
+    # Example: Move both servos
+    controller.move_flap(30)
+    controller.move_aileron(15)
